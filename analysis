@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#
+# analysis –  answer the four research questions for a cleaned BGG dataset
+#
+#   1. Most popular game mechanics           (counted across games)
+#   2. Most popular game domain              (counted across games)
+#   3. Pearson r between Year Published and Rating Average
+#   4. Pearson r between Complexity Average and Rating Average
+#
+# Usage:  analysis <clean.tsv>
+#
+set -euo pipefail
+
+infile=${1:-}
+[[ -z "$infile" || ! -f "$infile" ]] && { echo "Usage: $0 <clean.tsv>" >&2; exit 1; }
+
+awk -F'\t' '
+##############################################################################
+# Pass 1 – grab column numbers from header
+##############################################################################
+NR == 1 {
+    for (i = 1; i <= NF; i++) {
+        if ($i == "Mechanics")         mech_col = i
+        else if ($i == "Domains")      dom_col  = i
+        else if ($i == "Year Published")  year_col = i
+        else if ($i == "Rating Average")  rate_col = i
+        else if ($i == "Complexity Average") comp_col = i
+    }
+    next       # skip header line
+}
+
+##############################################################################
+# Pass 2 – process every data row
+##############################################################################
+{
+    ##########################################################################
+    # 1) mechanics  &  2) domains – count appearances
+    ##########################################################################
+    if ($mech_col != "") {
+        split($mech_col, mlist, ",")
+        for (j in mlist) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", mlist[j])
+            if (mlist[j] != "") mech_cnt[mlist[j]]++
+        }
+    }
+
+    if ($dom_col != "") {
+        split($dom_col, dlist, ",")
+        for (j in dlist) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", dlist[j])
+            if (dlist[j] != "") dom_cnt[dlist[j]]++
+        }
+    }
+
+    ##########################################################################
+    # 3) Year vs Rating – accumulate sums
+    ##########################################################################
+    if ($year_col != "" && $rate_col != "") {
+        y  = $year_col + 0;   r  = $rate_col + 0
+        nYR++; sumY  += y;  sumR1 += r
+        sumYR += y * r; sumY2 += y^2; sumR1_2 += r^2
+    }
+
+    ##########################################################################
+    # 4) Complexity vs Rating – accumulate sums (skip if complexity missing)
+    ##########################################################################
+    if ($comp_col != "" && $rate_col != "") {
+        c  = $comp_col + 0;   r2 = $rate_col + 0
+        nCR++; sumC  += c;  sumR2 += r2
+        sumCR += c * r2; sumC2 += c^2; sumR2_2 += r2^2
+    }
+}
+
+##############################################################################
+# Utility: compute Pearson correlation
+##############################################################################
+function pearson(n, sx, sy, sxy, sx2, sy2,   num, den) {
+    num = n * sxy - sx * sy
+    den = sqrt( (n * sx2 - sx^2) * (n * sy2 - sy^2) )
+    return (den == 0 ? 0 : num / den)
+}
+
+##############################################################################
+# Pass 3 – final report
+##############################################################################
+END {
+    ##########################################################################
+    # Find most frequent mechanic & domain
+    ##########################################################################
+    for (k in mech_cnt)
+        if (mech_cnt[k] > mech_max) { mech_max = mech_cnt[k]; mech_name = k }
+
+    for (k in dom_cnt)
+        if (dom_cnt[k] > dom_max) { dom_max = dom_cnt[k]; dom_name = k }
+
+    ##########################################################################
+    # Compute correlations
+    ##########################################################################
+    corrYR = pearson(nYR, sumY, sumR1, sumYR, sumY2, sumR1_2)
+    corrCR = pearson(nCR, sumC, sumR2, sumCR, sumC2, sumR2_2)
+
+    ##########################################################################
+    # Output – exact wording per assignment sample
+    ##########################################################################
+    printf "The most popular game mechanics is %s found in %d games\n", mech_name, mech_max
+    printf "The most game domain is %s found in %d games\n", dom_name, dom_max
+    printf "The correlation between the year of publication and the average rating is %.3f\n", corrYR
+    printf "The correlation between the complexity of a game and its average rating is %.3f\n", corrCR
+}
+' "$infile"
