@@ -140,6 +140,8 @@ END {
     printf "The most popular game mechanics %s %s found in %d %s\n", verb_M, listM, maxM, game_word_M
     printf "The most popular game domains %s %s found in %d %s\n", verb_D, listD, maxD, game_word_D
 
+    print ""
+
     if (corrYR == "")
         print "data insufficient to calculate correlation coefficient"
     else
