@@ -1,58 +1,91 @@
 #!/usr/bin/env bash
+###############################################################################
+# preprocess  –  clean the raw BoardGameGeek dataset and emit TAB-separated TSV
 #
-# preprocess  –  Clean the raw BoardGameGeek dataset and emit a tab-separated file
-#
-# Steps performed:
-#   1. Convert CRLF line endings to LF and strip UTF-8 BOM
-#   2. Change field separator from semicolon (;) to TAB
-#   3. Change 3,5   → 3.5   **only for pure numeric values**
-#   4. Remove non-ASCII characters
-#   5. Generate new unique IDs where the ID field is empty
-#   6. Fix the blank header cell at the end of line 1 (“Domains”)
+#   • Converts CRLF to LF and strips UTF-8 BOM
+#   • Changes ;  →  TAB
+#   • Converts  3,5  →  3.5   ONLY if the cell is purely numeric
+#   • Removes non-ASCII characters
+#   • Generates new unique IDs where the ID column is blank
+#   • Discards any data row whose column count ≠ header column count
 #
 # Usage:  preprocess <input-file>  > output.tsv
+###############################################################################
 set -euo pipefail
 
+###############################################################################
+# 1.  Basic argument checks
+###############################################################################
 infile=${1:-}
-[[ -z "$infile" || ! -f "$infile" ]] && { echo "Usage: $0 <input-file>" >&2; exit 1; }
+if [[ -z $infile ]]; then
+    echo "Usage: $0 <input-file>" >&2; exit 1
+fi
+if [[ ! -r $infile ]]; then
+    echo "Error: '$infile' not found or not readable." >&2; exit 1
+fi
+if [[ ! -s $infile ]]; then
+    echo "Error: '$infile' is empty." >&2; exit 1
+fi
 
-########################################
-# 1. Convert to Unix newlines, remove BOM
-########################################
+###############################################################################
+# 2.  Normalise newlines and strip UTF-8 BOM   → temp file
+###############################################################################
 tmp=$(mktemp)
 tr -d '\r' < "$infile" | sed '1s/^\xEF\xBB\xBF//' > "$tmp"
 
-########################################
-# 2. Determine the current maximum ID
-########################################
-max_id=$(awk -F';' 'NR>1 && $1 != "" { if ($1+0 > max) max = $1 } END { print max+0 }' "$tmp")
+###############################################################################
+# 3.  Determine max existing ID (pass-1)  —— used to create new IDs later
+###############################################################################
+max_id=$(awk -F';' 'NR>1 && $1 != "" { if ($1+0 > m) m=$1 } END{ print m+0 }' "$tmp")
 
-########################################
-# 3. Clean line by line and print TSV
-########################################
+###############################################################################
+# 4.  Main cleaning pass (awk)
+###############################################################################
 awk -v FS=';' -v OFS='\t' -v max="$max_id" '
-# ---- helper: convert comma decimal only if field is purely numeric ----
-function maybe_fix_float(v) {
-    if (v ~ /^[0-9]+,[0-9]+$/) { sub(/,/, ".", v) }
+###############################################################################
+# Helper: convert comma decimal IF the whole field is digits,comma,digits
+###############################################################################
+function numeric_comma_to_dot(v) {
+    if (v ~ /^[0-9]+,[0-9]+$/) sub(/,/, ".", v)
     return v
 }
 
+###############################################################################
+# Pass-0  ——  read header and grab expected column count
+###############################################################################
 NR == 1 {
-    # header line: give the blank last column its name
-    for (i = 1; i <= NF; i++) if ($i == "") $i = "Domains"
+    header_line = $0
+    expected_nf = NF          # store column count for later validation
+    print                    # emit header unchanged (just ;→TAB via OFS)
+    next
 }
 
-NR > 1 {
-    # fill empty IDs with new unique numbers
-    if ($1 == "" || $1 ~ /^[[:space:]]+$/) { ++max; $1 = max }
-}
-
+###############################################################################
+# For every data row
+###############################################################################
 {
-    for (i = 1; i <= NF; i++) $i = maybe_fix_float($i)
+    # ---- 4.1  skip malformed rows (wrong field count) ---------------------
+    if (NF != expected_nf) next
+
+    # ---- 4.2  fill missing ID --------------------------------------------
+    if ($1 == "" || $1 ~ /^[[:space:]]+$/) {
+        ++max
+        $1 = max
+    }
+
+    # ---- 4.3  normalise numeric commas -----------------------------------
+    for (i = 1; i <= NF; i++) {
+        $i = numeric_comma_to_dot($i)
+    }
+
+    # ---- 4.4  output line -------------------------------------------------
     print
 }
 ' "$tmp" |
-# 4. strip non-ASCII characters (keep TAB/LF/CR)
+###############################################################################
+# 5.  Remove non-ASCII (keep TAB/LF/CR)  and send to stdout
+###############################################################################
 tr -cd '\11\12\15\40-\176'
 
-rm -f "$tmp"   # 5. cleanup
+# House-keeping
+rm -f "$tmp"
