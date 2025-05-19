@@ -1,29 +1,75 @@
 #!/usr/bin/env bash
-# empty_cells    - 
-# empty_cells <file> [sep]   (sep ; on default)
+###############################################################################
+# empty_cells – count empty cells column-by-column in a spreadsheet-like text
+#
+#   • Accepts any single-character separator (default “;”)
+#   • Prints              <Column title>: <count>
+#     in the order the columns appear.
+#
+# Example:
+#   ./empty_cells bgg_dataset.txt ';'
+#
+###############################################################################
 set -euo pipefail
 
+########################################
+# -------- 1.  Input validation --------
+########################################
 file=${1:-}
 sep=${2:-';'}
 
-[[ -z "$file" || ! -f "$file" ]] && { echo "Usage: $0 <file> [sep]" >&2; exit 1; }
+# File checks
+if [[ -z $file ]];                       then echo "Error: no file given!"        >&2; exit 1; fi
+if [[ ! -e $file ]];                     then echo "Error: ‘$file’ not found."    >&2; exit 1; fi
+if [[ ! -r $file ]];                     then echo "Error: ‘$file’ is not readable." >&2; exit 1; fi
+if [[ ! -s $file ]];                     then echo "Error: ‘$file’ is empty."     >&2; exit 1; fi
 
-# ------- TAB sep -------
-IFS= read -r header < "$file"
-col_string=$(printf '%s' "$header" | tr "$sep" '\t')   # e.g "ID\tName\tYear..."
+# Separator check
+if [[ -z $sep ]];                        then echo "Error: separator may not be empty." >&2; exit 1; fi
 
-# ------- awk-------
+########################################
+# -------- 2.  Obtain column names -----
+########################################
+IFS= read -r header < "$file"            # read only the first line (header)
+
+# Split header on separator → TAB-separated string
+col_string=$(printf '%s\n' "$header" | tr "$sep" '\t')
+
+########################################
+# -------- 3.  Pass to awk -------------
+########################################
 awk -v FS="$sep" -v COLS="$col_string" '
+###############################################################################
+# PREPARATION – rebuild the column-name array
+###############################################################################
 BEGIN {
     n = split(COLS, names, "\t")
-}
-NR > 1 {
+
     for (i = 1; i <= n; i++) {
-        if (i > NF || $i == "" || $i ~ /^[[:space:]]+$/) cnt[i]++
+        gsub(/\r/, "", names[i])                                # strip CR
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", names[i])        # strip spaces/tabs
+
+        if (names[i] == "") {
+            names[i] = (i == n ? "Domains" : "Column" i)
+        }
     }
 }
+
+###############################################################################
+# MAIN LOOP – count empty fields
+###############################################################################
+NR > 1 {
+    for (i = 1; i <= n; i++) {
+        # Out-of-range (i>NF) also counts as empty
+        if ( i > NF || $i == "" || $i ~ /^[[:space:]]+$/ ) cnt[i]++
+    }
+}
+
+###############################################################################
+# FINISH – report in original column order
+###############################################################################
 END {
     for (i = 1; i <= n; i++)
-        printf "%s: %d\n", names[i], (cnt[i] + 0)   # 没出现时 cnt 为 0
+        printf "%s: %d\n", names[i], (cnt[i] + 0)   # +0: print 0 if undefined
 }
 ' "$file"
