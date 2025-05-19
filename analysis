@@ -1,110 +1,153 @@
 #!/usr/bin/env bash
+###############################################################################
+# analysis – answer the four research questions on a cleaned BGG TSV file
 #
-# analysis –  answer the four research questions for a cleaned BGG dataset
-#
-#   1. Most popular game mechanics           (counted across games)
-#   2. Most popular game domain              (counted across games)
-#   3. Pearson r between Year Published and Rating Average
-#   4. Pearson r between Complexity Average and Rating Average
+#   1. Most popular mechanics  (case-insensitive, unique per game)
+#   2. Most popular domains    (same rules)
+#   3. Pearson r  Year  vs RatingAverage        (if computable)
+#   4. Pearson r  Complexity vs RatingAverage   (if computable)
 #
 # Usage:  analysis <clean.tsv>
-#
+###############################################################################
 set -euo pipefail
 
+###############################################################################
+# 1.  Input validation
+###############################################################################
 infile=${1:-}
-[[ -z "$infile" || ! -f "$infile" ]] && { echo "Usage: $0 <clean.tsv>" >&2; exit 1; }
+if [[ -z $infile ]]; then
+  echo "Usage: $0 <clean.tsv>" >&2; exit 1
+fi
+if [[ ! -r $infile ]]; then
+  echo "Error: '$infile' not found or not readable." >&2; exit 1
+fi
+if [[ ! -s $infile ]]; then
+  echo "Error: '$infile' is empty." >&2; exit 1
+fi
 
+###############################################################################
+# 2.  Main awk program
+###############################################################################
 awk -F'\t' '
-##############################################################################
-# Pass 1 – grab column numbers from header
-##############################################################################
-NR == 1 {
-    for (i = 1; i <= NF; i++) {
-        if ($i == "Mechanics")         mech_col = i
-        else if ($i == "Domains")      dom_col  = i
-        else if ($i == "Year Published")  year_col = i
-        else if ($i == "Rating Average")  rate_col = i
-        else if ($i == "Complexity Average") comp_col = i
-    }
-    next       # skip header line
-}
-
-##############################################################################
-# Pass 2 – process every data row
-##############################################################################
-{
-    ##########################################################################
-    # 1) mechanics  &  2) domains – count appearances
-    ##########################################################################
-    if ($mech_col != "") {
-        split($mech_col, mlist, ",")
-        for (j in mlist) {
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", mlist[j])
-            if (mlist[j] != "") mech_cnt[mlist[j]]++
-        }
-    }
-
-    if ($dom_col != "") {
-        split($dom_col, dlist, ",")
-        for (j in dlist) {
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", dlist[j])
-            if (dlist[j] != "") dom_cnt[dlist[j]]++
-        }
-    }
-
-    ##########################################################################
-    # 3) Year vs Rating – accumulate sums
-    ##########################################################################
-    if ($year_col != "" && $rate_col != "") {
-        y  = $year_col + 0;   r  = $rate_col + 0
-        nYR++; sumY  += y;  sumR1 += r
-        sumYR += y * r; sumY2 += y^2; sumR1_2 += r^2
-    }
-
-    ##########################################################################
-    # 4) Complexity vs Rating – accumulate sums (skip if complexity missing)
-    ##########################################################################
-    if ($comp_col != "" && $rate_col != "") {
-        c  = $comp_col + 0;   r2 = $rate_col + 0
-        nCR++; sumC  += c;  sumR2 += r2
-        sumCR += c * r2; sumC2 += c^2; sumR2_2 += r2^2
-    }
-}
-
-##############################################################################
-# Utility: compute Pearson correlation
-##############################################################################
+###############################################################################
+# Helper: Pearson correlation (returns "" if not computable)
+###############################################################################
 function pearson(n, sx, sy, sxy, sx2, sy2,   num, den) {
+    if (n < 2) return ""                 # need at least 2 points
     num = n * sxy - sx * sy
     den = sqrt( (n * sx2 - sx^2) * (n * sy2 - sy^2) )
-    return (den == 0 ? 0 : num / den)
+    if (den == 0) return ""              # x or y constant
+    return num / den
 }
 
-##############################################################################
-# Pass 3 – final report
-##############################################################################
+###############################################################################
+# 0.  Detect column numbers from header
+###############################################################################
+NR == 1 {
+    for (i = 1; i <= NF; i++) {
+        if ($i == "Mechanics")           mech_c = i
+        else if ($i == "Domains")        dom_c  = i
+        else if ($i == "Year Published") year_c = i
+        else if ($i == "Rating Average") rate_c = i
+        else if ($i == "Complexity Average") comp_c = i
+    }
+    expected_nf = NF
+    next
+}
+
+###############################################################################
+# 1.  Skip malformed rows (wrong column count)
+###############################################################################
+NF != expected_nf { next }
+
+###############################################################################
+# 2.  Mechanics & Domains – count unique (case-insensitive) per game
+###############################################################################
+{
+    PROCINFO["sorted_in"] = "@ind_str_asc"   # keep awk deterministic
+
+    # --- mechanics ---
+    if ($mech_c != "") {
+        split($mech_c, arr, ",")
+        delete seenM
+        for (j in arr) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", arr[j])
+            lc = tolower(arr[j])
+            if (lc != "" && !(lc in seenM)) {
+                mech_cnt[lc]++; seenM[lc]
+                mech_print[lc] = arr[j]      # remember original case for display
+            }
+        }
+    }
+
+    # --- domains ---
+    if ($dom_c != "") {
+        split($dom_c, arr, ",")
+        delete seenD
+        for (j in arr) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", arr[j])
+            lc = tolower(arr[j])
+            if (lc != "" && !(lc in seenD)) {
+                dom_cnt[lc]++; seenD[lc]
+                dom_print[lc] = arr[j]
+            }
+        }
+    }
+
+    # --- Pearson accumulators (Year vs Rating) ---
+    if ($year_c != "" && $rate_c != "") {
+        y = $year_c + 0;  r = $rate_c + 0
+        nYR++; sumY+=y; sumR1+=r; sumYR+=y*r; sumY2+=y*y; sumR1_2+=r*r
+    }
+
+    # --- Pearson accumulators (Complexity vs Rating) ---
+    if ($comp_c != "" && $rate_c != "") {
+        c = $comp_c + 0;  r2 = $rate_c + 0
+        nCR++; sumC+=c; sumR2+=r2; sumCR+=c*r2; sumC2+=c*c; sumR2_2+=r2*r2
+    }
+}
+
+###############################################################################
+# 3.  Final report
+###############################################################################
 END {
-    ##########################################################################
-    # Find most frequent mechanic & domain
-    ##########################################################################
-    for (k in mech_cnt)
-        if (mech_cnt[k] > mech_max) { mech_max = mech_cnt[k]; mech_name = k }
+    # ----- most popular mechanic(s) -----
+    for (k in mech_cnt) {
+        if (mech_cnt[k] > maxM) { maxM = mech_cnt[k]; delete topM; topM[k] }
+        else if (mech_cnt[k] == maxM)    topM[k]
+    }
+    # Produce comma-separated, preserve original case
+    for (k in topM) listM = listM ? listM ", " mech_print[k] : mech_print[k]
 
-    for (k in dom_cnt)
-        if (dom_cnt[k] > dom_max) { dom_max = dom_cnt[k]; dom_name = k }
+    # ----- most popular domain(s) -------
+    for (k in dom_cnt) {
+        if (dom_cnt[k] > maxD) { maxD = dom_cnt[k]; delete topD; topD[k] }
+        else if (dom_cnt[k] == maxD)     topD[k]
+    }
+    for (k in topD) listD = listD ? listD ", " dom_print[k] : dom_print[k]
 
-    ##########################################################################
-    # Compute correlations
-    ##########################################################################
+    # ----- Grammar: game / games -------
+    game_word_M = (maxM == 1 ? "game" : "games")
+    game_word_D = (maxD == 1 ? "game" : "games")
+    verb_M      = (maxM == 1 ? "is"   : "are")
+    verb_D      = (maxD == 1 ? "is"   : "are")
+
+    # ----- Pearson results --------------
     corrYR = pearson(nYR, sumY, sumR1, sumYR, sumY2, sumR1_2)
     corrCR = pearson(nCR, sumC, sumR2, sumCR, sumC2, sumR2_2)
 
-    ##########################################################################
-    # Output – exact wording per assignment sample
-    ##########################################################################
-    printf "The most popular game mechanics is %s found in %d games\n", mech_name, mech_max
-    printf "The most game domain is %s found in %d games\n", dom_name, dom_max
-    printf "The correlation between the year of publication and the average rating is %.3f\n", corrYR
-    printf "The correlation between the complexity of a game and its average rating is %.3f\n", corrCR
+    # ----- Output -----------------------
+    printf "The most popular game mechanics %s %s found in %d %s\n", verb_M, listM, maxM, game_word_M
+    printf "The most popular game domains %s %s found in %d %s\n", verb_D, listD, maxD, game_word_D
+
+    if (corrYR == "")
+        print "data insufficient to calculate correlation coefficient"
+    else
+        printf "The correlation between the year of publication and the average rating is %.3f\n", corrYR
+
+    if (corrCR == "")
+        print "data insufficient to calculate correlation coefficient"
+    else
+        printf "The correlation between the complexity of a game and its average rating is %.3f\n", corrCR
 }
 ' "$infile"

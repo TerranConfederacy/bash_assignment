@@ -54,7 +54,7 @@ function numeric_comma_to_dot(v) {
 # Pass-0  ——  read header and grab expected column count
 ###############################################################################
 NR == 1 {
-    header_line = $0
+    for(i=1;i<=NF;i++){ gsub(/^[[:space:]]+|[[:space:]]+$/,"",$i); $i = numeric_comma_to_dot($i) }
     expected_nf = NF          # store column count for later validation
     print                    # emit header unchanged (just ;→TAB via OFS)
     next
